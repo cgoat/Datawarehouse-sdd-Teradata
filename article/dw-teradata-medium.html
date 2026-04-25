@@ -79,6 +79,24 @@
     white-space: pre;
   }
   hr { border: 0; border-top: 1px solid var(--rule); margin: 32px 0; }
+  figure {
+    margin: 24px 0;
+  }
+  figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: #fff;
+  }
+  figcaption {
+    color: var(--muted);
+    font-size: 14px;
+    margin-top: 8px;
+    text-align: center;
+    font-style: italic;
+  }
 </style>
 </head>
 <body>
@@ -307,8 +325,12 @@ silver:
   <li><strong>Great Expectations</strong> for distributional/business checks — value ranges, value sets with tolerances (<code>mostly: 0.999</code>), uniqueness on samples — and for persisting results to <code>DW_DQ.dq_result</code> so the dashboard can render PASS/FAIL trends per batch.</li>
 </ul>
 <p>
-  The combined coverage on the validated run was 53 dbt tests + 42 GE expectations across Bronze, Silver, and Gold. All pass except one I removed deliberately:
+  The combined coverage on the validated run was 53 dbt tests + 42 GE expectations across Bronze, Silver, and Gold. All pass except one I removed deliberately — and it shows up bright red on the dashboard:
 </p>
+<figure>
+  <img src="dataquality.png" alt="Reliability dashboard showing the latest DQ results: a load_catalog_sales row via fastload tool with 1.4M rows, then the GE results table with one FAIL on customer.expect_column_values_to_be_in_set and the rest PASS.">
+  <figcaption>The Reliability dashboard renders the same <code>DW_DQ.dq_result</code> table that the GE runner writes — one row per expectation per batch. The single FAIL on <code>customer</code> is the CHAR(1) padding trap below, kept visible until the lesson is learned.</figcaption>
+</figure>
 <div class="callout">
   <strong>The CHAR(1) padding trap.</strong> The <code>teradatasql</code> driver returns <code>CHAR(1)</code> values padded to display width, so <code>customer.c_preferred_cust_flag</code> comes back as <code>'Y '</code> (length 2). Any <code>value_set: ['Y', 'N']</code> expectation fails on every row. The clean form lives in <code>dim_customer.is_preferred_customer</code> as <code>0/1</code>. Test the cleaned column; let the raw one alone.
 </div>
@@ -353,6 +375,11 @@ QUERIES = {
   <tr><td><code>annual_sales_by_channel</code></td><td class="num">2.54</td><td class="num">3.46</td><td class="num lose">0.74×</td></tr>
   <tr><td><code>sales_by_category</code></td><td class="num">4.96</td><td class="num">6.84</td><td class="num lose">0.73×</td></tr>
 </table>
+
+<figure>
+  <img src="performance.png" alt="Performance dashboard tab showing the same before/after comparison table — one green 1.29x speedup for returns_rate_by_brand, two red regressions for sales_by_category (0.73x) and annual_sales_by_channel (0.74x), plus all 15 individual iterations grouped by phase.">
+  <figcaption>The Performance tab — same data on the dashboard, with the regressions in red. Leaving the bad result visible is the whole point: it's what justifies the next iteration.</figcaption>
+</figure>
 
 <p>One real win, two regressions, two unmoved. So what happened?</p>
 
