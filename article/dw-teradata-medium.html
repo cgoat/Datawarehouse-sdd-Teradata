@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Building a TPC-DS Data Warehouse on Teradata — Bronze, Silver, Gold, and the Honest Lessons of Performance Tuning</title>
+<style>
+  :root {
+    --fg: #292929; --muted: #6b6b6b; --bg: #fff; --rule: #eee;
+    --code-bg: #f6f8fa; --code-border: #d0d7de; --accent: #1a8917;
+    --warn: #b4252a; --ok: #1a7f37;
+  }
+  html { -webkit-font-smoothing: antialiased; }
+  body {
+    max-width: 760px;
+    margin: 48px auto;
+    padding: 0 24px;
+    font: 18px/1.6 charter, Georgia, "Times New Roman", serif;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  h1 { font-size: 36px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.02em; }
+  h2 { font-size: 26px; line-height: 1.25; margin: 40px 0 12px; letter-spacing: -0.01em; }
+  h3 { font-size: 20px; line-height: 1.3; margin: 28px 0 8px; }
+  p  { margin: 0 0 16px; }
+  .deck { color: var(--muted); font-size: 20px; margin: 0 0 24px; }
+  .meta { color: var(--muted); font-size: 14px; margin: 0 0 32px; border-bottom: 1px solid var(--rule); padding-bottom: 16px; }
+  ul, ol { margin: 0 0 16px 24px; padding: 0; }
+  li { margin-bottom: 6px; }
+  blockquote {
+    border-left: 3px solid var(--rule);
+    margin: 16px 0;
+    padding: 4px 16px;
+    color: var(--muted);
+    font-style: italic;
+  }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.85em;
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 16px 0;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  table { border-collapse: collapse; margin: 16px 0; font-size: 15px; width: 100%; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+  th { background: #fafafa; font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .win  { color: var(--ok); font-weight: 600; }
+  .lose { color: var(--warn); font-weight: 600; }
+  .callout {
+    background: #fffbea;
+    border: 1px solid #facc15;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 24px 0;
+    font-size: 16px;
+  }
+  .ascii {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 32px 0; }
+</style>
+</head>
+<body>
+
+<h1>Building a TPC-DS Data Warehouse on Teradata</h1>
+<p class="deck">From Bronze to Gold in five sessions — including the parts that didn't work the first time.</p>
+<p class="meta">A walkthrough of layered ingestion, dbt on Teradata, Great Expectations, dynamic FastLoad selection, and what happens when you apply a "performance tuning" that makes things slower.</p>
+
+<h2>The job</h2>
+<p>
+  Stand up a Teradata data warehouse for a fictitious retailer. CSV files in, BI-ready marts out, a daily SLA of 7 a.m., a Reliability Engineer who wants to see the pipeline status, and a Business Analyst who wants four marts: <em>sales performance</em>, <em>customer 360</em>, <em>product analytics</em>, and <em>channel comparison</em>.
+</p>
+<p>
+  Source data: TPC-DS scale factor 1, the canonical retail benchmark — 25 pipe-delimited files, ~1.2&nbsp;GB, three sales channels (store, catalog, web), three corresponding returns tables, and a fistful of dimensions. Target: a real Teradata 20 instance.
+</p>
+
+<h2>Architecture in one screen</h2>
+<div class="ascii">CSVs (.dat)
+  │
+  ▼
+Bronze (DW_BRONZE)        ← raw 1:1 of the files, plus _batch_id/_ingested_at
+  │   loader: Python + teradatasql
+  │   picker: file ≥ 1 MB → FastLoad escape; smaller → executemany
+  ▼
+Silver (DW_SILVER)        ← conformed dims + unified facts + anomaly sidecars
+  │   stg_* / int_*  : ephemeral CTEs (no extra storage, no GRANT issues)
+  │   dim_* / fact_* : tables, dbt-managed
+  │   fact_*_anomalies: rows that failed business rules — never silently dropped
+  ▼
+Gold (DW_GOLD)            ← four BA marts
+        mart_sales_performance · mart_customer_360
+        mart_product_analytics · mart_channel_comparison
+
+Cross-cutting:
+  DW_DQ.run_log     ← one row per pipeline step, with tool used + duration
+  DW_DQ.dq_result   ← Great Expectations results, keyed by batch
+  DW_DQ.perf_log    ← phase 3 benchmark before/after timings
+  Airflow DAG       ← daily 03:00 run, 4 h SLA window
+  PHP dashboard     ← Reliability · Silver · Gold · Performance tabs
+</div>
+
+<h2>Phase 0 — the loader story</h2>
+<p>
+  The first instinct on any Python-to-Teradata pipeline is the same: <code>cursor.executemany("INSERT ... VALUES (?, ?, ?)", chunk)</code> in a loop over <code>pandas.read_csv(chunksize=10_000)</code>. It works. It's also genuinely slow.
+</p>
+<p>
+  My first end-to-end Bronze load took just over <strong>17 minutes</strong> for ~7.8&nbsp;M rows across 24 tables (skipping <code>inventory</code>'s 11.7&nbsp;M for the demo). The biggest single file, <code>store_sales.dat</code> (385 MB / 2.88&nbsp;M rows), accounted for the bulk. Each batch was a parse-prepare-execute round-trip; with ~280 round-trips per fact table over a VM network, that adds up.
+</p>
+
+<h3>The right tool for the volume</h3>
+<p>
+  Teradata has its own toolbox for bulk loads: <code>FastLoad</code>, <code>MultiLoad</code>, <code>TPump</code>, and <code>TPT</code> (Teradata Parallel Transporter, a meta-tool that drives the others). For a Python project where I'd rather not shell out to a separate CLI, the modern answer is the FastLoad escape that ships with the <code>teradatasql</code> driver itself:
+</p>
+
+<pre><code>cur.execute("{fn teradata_try_fastload}")        # arms the connection
+cur.executemany(
+    "INSERT INTO DW_BRONZE.store_sales (...) VALUES (?, ?, ...)",
+    rows,
+)</code></pre>
+
+<p>
+  But FastLoad has overhead: it opens a separate session, negotiates per-AMP delivery, then commits at end-of-statement. For a 12-row dimension like <code>store</code>, that's all cost and no benefit. So I made the loader pick:
+</p>
+
+<pre><code>FASTLOAD_MIN_BYTES = int(os.getenv("FASTLOAD_MIN_BYTES", "1000000"))  # 1 MB
+
+def pick_tool(path: Path) -> str:
+    return "fastload" if path.stat().st_size &gt;= FASTLOAD_MIN_BYTES else "executemany"</code></pre>
+
+<p>
+  And — important for the dashboard — the chosen tool is recorded in <code>DW_DQ.run_log.tool</code> alongside the row count and duration. The Reliability Engineer can see at a glance which path each table took.
+</p>
+
+<h3>The bug that taught me about FastLoad sessions</h3>
+<p>
+  My first attempt to wire in the picker failed instantly:
+</p>
+<blockquote>[Error 2636] catalog_page must be empty for Fast Loading.</blockquote>
+<p>
+  But I had just truncated <code>catalog_page</code>. What gives?
+</p>
+<p>
+  Each call to <code>cur.executemany()</code> with the FastLoad escape opens its own FastLoad session and commits at the end. My loader still called <code>read_csv(chunksize=10_000)</code> and looped over chunks. The first chunk opened a session, inserted 10,000 rows, committed. The second chunk opened a fresh session — and FastLoad's "table must be empty" check now saw 10,000 rows. Boom.
+</p>
+<p>
+  The fix isn't elegant but it's the right one: if the picker says FastLoad, materialize the whole file and call <code>executemany</code> once. For SF1's largest file (<code>store_sales</code> at 2.88&nbsp;M rows), that's ~700&nbsp;MB of Python memory — fine on any modern machine. The chunked-streaming path is preserved for the <code>executemany</code> case where it still matters.
+</p>
+
+<h3>The numbers</h3>
+<p>After the picker landed:</p>
+
+<table>
+  <tr><th>Path</th><th>Tables</th><th>Rows</th><th>Time</th><th>Avg throughput</th></tr>
+  <tr><td><code>fastload</code></td><td class="num">13</td><td class="num">7,804,647</td><td class="num">325 s</td><td class="num">24,002 rows/sec</td></tr>
+  <tr><td><code>executemany</code></td><td class="num">11</td><td class="num">7,689</td><td class="num">38 s</td><td class="num">201 rows/sec*</td></tr>
+</table>
+
+<p style="font-size:14px;color:var(--muted)">*executemany throughput is dominated by per-table session setup (~3.5 s each) — the rows themselves take milliseconds.</p>
+
+<p>Per-table speedups vs the <code>executemany</code>-only baseline:</p>
+<ul>
+  <li><code>store_sales</code> (2.88M rows): ~5–7 min → <strong>84 s</strong> (~5–9×)</li>
+  <li><code>catalog_sales</code> (1.44M): 405 s → <strong>63 s</strong> (6.4×)</li>
+  <li><code>customer_demographics</code> (1.92M): 125 s → <strong>30 s</strong> (4.1×)</li>
+</ul>
+
+<p>Total Bronze load went from ~17 min to ~6 min, all driven by a 5-line picker.</p>
+
+<h2>Phase 1 — anomaly sidecars beat data loss</h2>
+<p>
+  Silver is where business rules show up. Quantities should be positive, FKs should resolve, dates shouldn't be null. The wrong move is to filter the bad rows out and forget. The right move is to <em>tag them and route them</em>.
+</p>
+<p>
+  Every union of channel facts goes through one intermediate model that adds an <code>_anomaly_reason</code> column:
+</p>
+
+<pre><code>SELECT
+    u.*,
+    CASE
+        WHEN item_sk IS NULL                             THEN 'missing_item_sk'
+        WHEN sale_order_id IS NULL                       THEN 'missing_order_id'
+        WHEN sold_date_sk IS NULL                        THEN 'missing_sold_date'
+        WHEN quantity IS NOT NULL AND quantity &lt;= 0      THEN 'non_positive_quantity'
+        WHEN sales_price IS NOT NULL AND sales_price &lt; 0 THEN 'negative_sales_price'
+        WHEN net_paid IS NOT NULL AND net_paid &lt; 0       THEN 'negative_net_paid'
+        ELSE NULL
+    END AS _anomaly_reason
+FROM ( /* UNION ALL of stg_store_sales, stg_catalog_sales, stg_web_sales */ ) u</code></pre>
+
+<p>
+  Then two models read from the same intermediate:
+</p>
+<ul>
+  <li><code>fact_sales</code> — <code>WHERE _anomaly_reason IS NULL</code></li>
+  <li><code>fact_sales__anomalies</code> — <code>WHERE _anomaly_reason IS NOT NULL</code></li>
+</ul>
+
+<p>
+  TPC-DS at SF1 generates a deliberate ~2–3% of dirty rows. Our pipeline tagged exactly that:
+</p>
+
+<table>
+  <tr><th>Table</th><th>Rows</th></tr>
+  <tr><td><code>fact_sales</code> (clean)</td><td class="num">4,903,874</td></tr>
+  <tr><td><code>fact_sales__anomalies</code></td><td class="num">137,462 (2.7%)</td></tr>
+  <tr><td><code>fact_returns</code> (clean)</td><td class="num">490,205</td></tr>
+  <tr><td><code>fact_returns__anomalies</code></td><td class="num">13,139 (2.6%)</td></tr>
+</table>
+
+<p>
+  The Silver dashboard shows the breakdown by reason — which is the actually-useful question for a Reliability Engineer ("are we suddenly dropping 30% of orders for missing item_sk?"). Silent filters can't answer that.
+</p>
+
+<h2>The dbt-on-Teradata sharp edges</h2>
+<p>
+  dbt-teradata works, but it has its quirks. A short tour of the ones I hit, all of which look like compiler errors and aren't:
+</p>
+
+<h3>Reserved-word column names</h3>
+<p>
+  Teradata 20 reserves more words than I expected: <code>date</code>, <code>year</code>, <code>class</code>. My first <code>dim_date</code> aliased columns as <code>date</code> and <code>year</code> ("of course"); both failed parsing in <code>CREATE TABLE AS SELECT</code> with cryptic <em>"expected something between AS and 'date'"</em>. The fix is mechanical (<code>calendar_date</code>, <code>calendar_year</code>) but you have to fix every downstream reference too. A grep saved me; the over-eager <code>replace_all</code> bit me.
+</p>
+
+<h3>Two-letter table aliases that aren't aliases</h3>
+<p>
+  <code>cd.cd_gender</code> — innocent, right? Not on this Teradata. The two-letter alias <code>cd</code> after a comma in a SELECT list trips the parser. <code>cdem.cd_gender</code> works. Same story with <code>cs</code> as a CTE alias. Use three-letter aliases and stop arguing with the parser.
+</p>
+
+<h3>NTILE doesn't exist on this build</h3>
+<p>
+  <code>NTILE(5) OVER (ORDER BY x)</code> is the textbook quintile. On this Teradata it raises <em>"expected something between '(' and the integer '5'"</em>. The replacement is straightforward but worth saving as a macro:
+</p>
+
+<pre><code>{% macro quintile(expr, direction='ASC') %}
+CAST(CEILING(
+    5.0
+    * CAST(ROW_NUMBER() OVER (ORDER BY {{ expr }} {{ direction }}) AS FLOAT)
+    / NULLIF(CAST(COUNT(*) OVER () AS FLOAT), 0)
+) AS INTEGER)
+{% endmacro %}</code></pre>
+
+<p>
+  The <code>FLOAT</code> casts matter: integer arithmetic underflows to 0 for the smallest row when the dataset is large. I learned that when 989 customers landed with <code>r_score = 0</code> and broke the test.
+</p>
+
+<h3>View chains across databases want WITH GRANT OPTION</h3>
+<p>
+  My first <code>silver/stg_*</code> models were views; <code>silver/intermediate/int_*</code> were views built on top of those. Creating <code>int_sales_unioned</code> in <code>DW_SILVER</code> that referenced staging views (which referenced <code>DW_BRONZE</code>) tripped Teradata's transitive-permission check: the creator needs <code>SELECT WITH GRANT OPTION</code> on every link in the chain.
+</p>
+<p>
+  Three options: grant the privilege (denied — sensible default in shared environments), make the staging tables (extra disk, GRANT issue moves), or make the staging models <strong>ephemeral CTEs</strong>. The ephemeral path is best for this stack: dbt inlines staging into the consumer's SQL, the consumer is a <code>CREATE TABLE AS SELECT</code> that only needs plain <code>SELECT</code>, and there's no extra disk.
+</p>
+
+<pre><code># dbt_project.yml
+silver:
+  +schema: DW_SILVER
+  stg:          { +materialized: ephemeral }
+  intermediate: { +materialized: ephemeral }
+  dim:          { +materialized: table }
+  fact:         { +materialized: table }
+  anomalies:    { +materialized: table }</code></pre>
+
+<p>
+  One catch: dbt wraps ephemeral CTEs in a top-level <code>WITH</code>. If your intermediate model also starts with <code>WITH</code>, you get nested CTEs and Teradata declines (<em>"WITH clause not supported within views"</em>). Rewrite the intermediate as a plain <code>SELECT ... FROM (subquery)</code> and you're done.
+</p>
+
+<h3><code>+schema: SILVER</code> doesn't mean what you think</h3>
+<p>
+  In dbt-teradata, <code>+schema</code> defaults to a <em>suffix</em> applied to <code>target.schema</code>. So <code>+schema: SILVER</code> with <code>target.schema = DW_SILVER</code> writes to <code>DW_SILVER_SILVER</code> — except the cluster I was on already had a database called <code>SILVER</code> with 60 MB allocated, and dbt happily wrote into that, until it ran out of room. The fix is a one-liner macro override that treats <code>+schema</code> as absolute:
+</p>
+
+<pre><code>{% macro generate_schema_name(custom_schema_name, node) -%}
+    {%- if custom_schema_name is none -%}
+        {{ target.schema }}
+    {%- else -%}
+        {{ custom_schema_name | trim }}
+    {%- endif -%}
+{%- endmacro %}</code></pre>
+
+<h2>Data quality: dbt tests + Great Expectations, layered</h2>
+<p>
+  Two complementary mechanisms, applied per layer:
+</p>
+<ul>
+  <li><strong>dbt tests</strong> for structural invariants — <code>not_null</code> on PKs/FKs, <code>unique</code> on dimension keys, <code>relationships</code> on fact-to-dim joins, <code>accepted_values</code> on enum columns.</li>
+  <li><strong>Great Expectations</strong> for distributional/business checks — value ranges, value sets with tolerances (<code>mostly: 0.999</code>), uniqueness on samples — and for persisting results to <code>DW_DQ.dq_result</code> so the dashboard can render PASS/FAIL trends per batch.</li>
+</ul>
+<p>
+  The combined coverage on the validated run was 53 dbt tests + 42 GE expectations across Bronze, Silver, and Gold. All pass except one I removed deliberately:
+</p>
+<div class="callout">
+  <strong>The CHAR(1) padding trap.</strong> The <code>teradatasql</code> driver returns <code>CHAR(1)</code> values padded to display width, so <code>customer.c_preferred_cust_flag</code> comes back as <code>'Y '</code> (length 2). Any <code>value_set: ['Y', 'N']</code> expectation fails on every row. The clean form lives in <code>dim_customer.is_preferred_customer</code> as <code>0/1</code>. Test the cleaned column; let the raw one alone.
+</div>
+
+<h2>Phase 3 — performance tuning, with a humbling result</h2>
+<p>
+  Phase 3 is where most "we tuned and got 5× faster!" articles end. This one isn't going to. Let me show you what actually happened.
+</p>
+
+<h3>The harness</h3>
+<p>
+  Five queries chosen to stress different access patterns: a full-scan group-by, a high-cardinality grouping, two FK-join aggregations, and a date-range filter. Each gets a unique comment per run so result-cache reuse can't cheat the numbers. Three iterations per phase. Median is what gets reported.
+</p>
+
+<pre><code># perf/queries.py — abbreviated
+QUERIES = {
+    "annual_sales_by_channel":   "...full scan + group by year/channel...",
+    "top_25_customers":          "...group by customer_sk + limit...",
+    "sales_by_category":         "...join dim_item + group by category...",
+    "daily_sales_one_month":     "...filter Jan 2002 + group by date...",
+    "returns_rate_by_brand":     "...sales LEFT JOIN returns + by brand...",
+}</code></pre>
+
+<h3>The tunings</h3>
+<p>Two:</p>
+<ol>
+  <li>
+    <strong>Comprehensive <code>COLLECT STATISTICS</code></strong> on join columns, GROUP BY columns, and filter columns across every Silver and Gold table — single columns plus a few well-chosen combinations like <code>(item_sk, sold_date_sk)</code>.
+  </li>
+  <li>
+    <strong>Recreate <code>fact_sales</code> with <code>PARTITION BY RANGE_N(sold_date_sk EACH 365)</code></strong> — a year-bucketed PPI in theory perfect for the daily-Jan-2002 query. To enable the partition, the primary index moved to <code>(item_sk, sale_order_id)</code>.
+  </li>
+</ol>
+
+<h3>The results</h3>
+
+<table>
+  <tr><th>Query</th><th>Before (s)</th><th>After (s)</th><th>Speedup</th></tr>
+  <tr><td><code>returns_rate_by_brand</code></td><td class="num">4.44</td><td class="num">3.44</td><td class="num win">1.29×</td></tr>
+  <tr><td><code>top_25_customers</code></td><td class="num">6.61</td><td class="num">6.42</td><td class="num">1.03×</td></tr>
+  <tr><td><code>daily_sales_one_month</code></td><td class="num">2.01</td><td class="num">2.17</td><td class="num">0.93×</td></tr>
+  <tr><td><code>annual_sales_by_channel</code></td><td class="num">2.54</td><td class="num">3.46</td><td class="num lose">0.74×</td></tr>
+  <tr><td><code>sales_by_category</code></td><td class="num">4.96</td><td class="num">6.84</td><td class="num lose">0.73×</td></tr>
+</table>
+
+<p>One real win, two regressions, two unmoved. So what happened?</p>
+
+<h3>What the dashboard told us</h3>
+<p>
+  <code>COLLECT STATISTICS</code> earned its keep on the multi-join: <code>returns_rate_by_brand</code> joins <code>fact_sales</code> to <code>dim_item</code> and <code>fact_returns</code>. Better cardinality estimates let the optimizer pick smaller intermediate spool, and the query got 29% faster.
+</p>
+<p>
+  The PPI didn't help <code>daily_sales_one_month</code> at all — and this is the subtle part. The query filters on <code>dim_date.calendar_year = 2002</code>, not on <code>fact_sales.sold_date_sk</code>. For partition pruning to kick in, the optimizer would have to push the predicate from the dim through the join to the fact. With a 2-second baseline already, there wasn't much room and the predicate didn't propagate the way I'd hoped.
+</p>
+<p>
+  The two regressions — the queries that grouped by category or by year/channel — are about the <strong>primary index change</strong>. Before, <code>fact_sales</code> had the default PI dbt picks. After, I'd moved PI to <code>(item_sk, sale_order_id)</code> to enable PPI. Group-by aggregations now require <code>fact_sales</code> rows to be redistributed across AMPs by the grouping column — and that's pure cost.
+</p>
+
+<div class="callout">
+  <strong>The honest takeaway.</strong> On Teradata, primary index choice dominates partitioning. Pick PI to match your most-frequent join key, not the column you want to partition on. Adding PPI without an EXPLAIN-driven PI plan is a textbook way to make queries slower.
+</div>
+
+<h3>Why this still ships</h3>
+<p>
+  I left the result honest on the dashboard. The Performance tab shows all five queries, the median timings, and the speedup column with the regressions colored in red. That's exactly what the Reliability Engineer needs to make the case for a second iteration. A perf tuning project that hides its losses is a perf tuning project that won't get a second round of investment.
+</p>
+
+<h2>What I'd do differently next time</h2>
+<ul>
+  <li><strong>Start with EXPLAIN, not intuition.</strong> Five minutes of reading plans before tuning saves an hour of regression analysis.</li>
+  <li><strong>Stats first, structure second.</strong> Stats are reversible (just re-collect). PI changes mean recreating the table.</li>
+  <li><strong>If you must change PI, change it for the join you actually have.</strong> Our query mix is dominated by <code>customer_sk</code> joins; PI on <code>(customer_sk, sold_date_sk)</code> with PPI on <code>sold_date_sk</code> is a more defensible config than what I chose.</li>
+  <li><strong>Track perf history, not just current numbers.</strong> The <code>DW_DQ.perf_log</code> table makes "did this regress?" a one-line query.</li>
+</ul>
+
+<h2>What's in the repo</h2>
+<pre><code>dw-teradata/
+├── ingestion/         Loader (FastLoad picker), DDL runner, run-log writer
+├── transform/         dbt project: stg/int (ephemeral) + dim/fact/anomaly + 4 marts
+├── dq/                Great Expectations suites (bronze/silver/gold)
+├── perf/              Phase 3 benchmark + tuner
+├── airflow/           Daily DAG, runs in Docker
+├── api/               FastAPI for the dashboard
+├── dashboard/         PHP — Reliability · Silver · Gold · Performance tabs
+├── teradata/ddl/      One-time DBs + Bronze tables + run_log/dq_result/perf_log
+├── scripts/           Windows .bat wrappers for every step
+└── tests/             pytest — schema contract checks against .dat files</code></pre>
+
+<p>
+  The full source is at <a href="https://github.com/cgoat/Datawarehouse-sdd-Teradata">github.com/cgoat/Datawarehouse-sdd-Teradata</a>. It runs end-to-end against a Teradata instance with TPC-DS SF1 data in <code>./data/</code>; bring your own warehouse.
+</p>
+
+<hr>
+<p class="meta">If you take one thing away: track <em>what tool ran each step</em> in your run log, not just whether it succeeded. The day you wonder why last Tuesday's load took twice as long is the day a <code>tool</code> column saves you an hour.</p>
+
+</body>
+</html>
