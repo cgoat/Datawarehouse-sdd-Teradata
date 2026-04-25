@@ -1,0 +1,85 @@
+version: 2
+
+sources:
+  - name: bronze
+    schema: DW_BRONZE
+    description: "Raw TPC-DS tables loaded 1:1 from .dat files."
+    tables:
+      - name: store_sales
+        description: "Store channel sales fact."
+        columns:
+          - name: ss_item_sk
+            tests:
+              - not_null
+          - name: ss_ticket_number
+            tests:
+              - not_null
+          - name: ss_sold_date_sk
+            description: "FK to date_dim; null for returned-but-not-resold edge cases."
+      - name: catalog_sales
+        columns:
+          - name: cs_item_sk
+            tests: [not_null]
+          - name: cs_order_number
+            tests: [not_null]
+      - name: web_sales
+        columns:
+          - name: ws_item_sk
+            tests: [not_null]
+          - name: ws_order_number
+            tests: [not_null]
+      - name: store_returns
+      - name: catalog_returns
+      - name: web_returns
+      - name: inventory
+        columns:
+          - name: inv_item_sk
+            tests: [not_null]
+          - name: inv_warehouse_sk
+            tests: [not_null]
+          - name: inv_date_sk
+            tests: [not_null]
+      - name: customer
+        columns:
+          - name: c_customer_sk
+            tests: [not_null, unique]
+          - name: c_customer_id
+            tests: [not_null, unique]
+      - name: customer_address
+        columns:
+          - name: ca_address_sk
+            tests: [not_null, unique]
+      - name: customer_demographics
+        columns:
+          - name: cd_demo_sk
+            tests: [not_null, unique]
+      - name: household_demographics
+      - name: income_band
+      - name: date_dim
+        columns:
+          - name: d_date_sk
+            tests: [not_null, unique]
+      - name: time_dim
+        columns:
+          - name: t_time_sk
+            tests: [not_null, unique]
+      - name: item
+        columns:
+          - name: i_item_sk
+            tests: [not_null, unique]
+      - name: promotion
+        columns:
+          - name: p_promo_sk
+            tests: [not_null, unique]
+      - name: store
+        columns:
+          - name: s_store_sk
+            tests: [not_null, unique]
+      - name: call_center
+      - name: catalog_page
+      - name: warehouse
+      - name: web_page
+      - name: web_site
+      - name: reason
+      - name: ship_mode
+      - name: dbgen_version

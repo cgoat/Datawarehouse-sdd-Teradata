@@ -1,0 +1,45 @@
+name: dw_teradata
+version: 1.0.0
+config-version: 2
+profile: dw_teradata
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  dw_teradata:
+    bronze:
+      +materialized: view
+      +schema: DW_BRONZE
+    silver:
+      +schema: DW_SILVER
+      # stg + intermediate are ephemeral: dbt inlines them as CTEs into
+      # downstream models. Avoids the cross-DB view GRANT OPTION issue
+      # AND keeps DW_SILVER from filling up with duplicated raw data.
+      stg:
+        +materialized: ephemeral
+      intermediate:
+        +materialized: ephemeral
+      dim:
+        +materialized: table
+      fact:
+        +materialized: table
+      anomalies:
+        +materialized: table
+    gold:
+      +materialized: table
+      +schema: DW_GOLD
+
+seeds:
+  dw_teradata:
+    +schema: DW_SILVER
+
+vars:
+  batch_id: "{{ env_var('DW_BATCH_ID', 'manual') }}"

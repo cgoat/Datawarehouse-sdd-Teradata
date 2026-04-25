@@ -1,0 +1,43 @@
+-- Projects store_sales to the unified fact_sales grain.
+-- Columns absent from store_sales are nulled; order must match
+-- stg_catalog_sales and stg_web_sales for the UNION ALL downstream.
+
+SELECT
+    CAST('store' AS VARCHAR(10))             AS channel,
+    CAST(ss_ticket_number AS BIGINT)         AS sale_order_id,
+    ss_item_sk                               AS item_sk,
+    ss_customer_sk                           AS customer_sk,
+    ss_cdemo_sk                              AS cdemo_sk,
+    ss_hdemo_sk                              AS hdemo_sk,
+    ss_addr_sk                               AS addr_sk,
+    ss_store_sk                              AS store_sk,
+    CAST(NULL AS INTEGER)                    AS call_center_sk,
+    CAST(NULL AS INTEGER)                    AS catalog_page_sk,
+    CAST(NULL AS INTEGER)                    AS warehouse_sk,
+    CAST(NULL AS INTEGER)                    AS web_page_sk,
+    CAST(NULL AS INTEGER)                    AS web_site_sk,
+    CAST(NULL AS INTEGER)                    AS ship_mode_sk,
+    ss_promo_sk                              AS promo_sk,
+    ss_sold_date_sk                          AS sold_date_sk,
+    CAST(NULL AS INTEGER)                    AS ship_date_sk,
+    ss_sold_time_sk                          AS sold_time_sk,
+    ss_quantity                              AS quantity,
+    ss_wholesale_cost                        AS wholesale_cost,
+    ss_list_price                            AS list_price,
+    ss_sales_price                           AS sales_price,
+    ss_ext_discount_amt                      AS ext_discount_amt,
+    ss_ext_sales_price                       AS ext_sales_price,
+    ss_ext_wholesale_cost                    AS ext_wholesale_cost,
+    ss_ext_list_price                        AS ext_list_price,
+    ss_ext_tax                               AS ext_tax,
+    ss_coupon_amt                            AS coupon_amt,
+    CAST(NULL AS DECIMAL(7,2))               AS ext_ship_cost,
+    ss_net_paid                              AS net_paid,
+    ss_net_paid_inc_tax                      AS net_paid_inc_tax,
+    CAST(NULL AS DECIMAL(7,2))               AS net_paid_inc_ship,
+    CAST(NULL AS DECIMAL(7,2))               AS net_paid_inc_ship_tax,
+    ss_net_profit                            AS net_profit,
+    _batch_id,
+    _ingested_at,
+    _source_file
+FROM {{ source('bronze', 'store_sales') }}

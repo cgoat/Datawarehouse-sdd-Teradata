@@ -1,0 +1,15 @@
+# Copy to profiles.yml. Values override via TD_* env vars in .env.
+# dbt-teradata keys: host, user, password, schema (NOT server/username).
+
+dw_teradata:
+  target: dev
+  outputs:
+    dev:
+      type: teradata
+      host: "{{ env_var('TD_HOST', '192.168.47.128') }}"
+      user: "{{ env_var('TD_USER', 'dbc') }}"
+      password: "{{ env_var('TD_PASSWORD', 'dbc') }}"
+      schema: "{{ env_var('TD_DB_SILVER', 'DW_SILVER') }}"
+      tmode: ANSI
+      logmech: "{{ env_var('TD_LOGMECH', 'TD2') }}"
+      threads: 4

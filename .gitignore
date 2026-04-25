@@ -1,0 +1,37 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# dbt
+transform/target/
+transform/dbt_packages/
+transform/logs/
+transform/profiles.yml
+transform/.user.yml
+
+# project-level logs
+logs/
+
+# Claude Code workspace state
+.claude/
+
+# Great Expectations
+dq/gx/uncommitted/
+
+# Airflow
+airflow/logs/
+airflow/plugins/
+airflow/config/airflow.cfg
+
+# data (kept local, not committed — files are ~1.2 GB)
+data/*.dat
+
+# IDE
+.vscode/
+.idea/

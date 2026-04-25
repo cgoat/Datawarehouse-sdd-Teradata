@@ -1,0 +1,35 @@
+-- web_returns: refunded vs returning can differ.
+-- wr_account_credit is aliased to `credit` to harmonize with store/catalog.
+
+SELECT
+    CAST('web' AS VARCHAR(10))               AS channel,
+    CAST(wr_order_number AS BIGINT)          AS return_order_id,
+    wr_item_sk                               AS item_sk,
+    wr_refunded_customer_sk                  AS refunded_customer_sk,
+    wr_returning_customer_sk                 AS returning_customer_sk,
+    wr_refunded_cdemo_sk                     AS refunded_cdemo_sk,
+    wr_refunded_hdemo_sk                     AS refunded_hdemo_sk,
+    wr_refunded_addr_sk                      AS refunded_addr_sk,
+    CAST(NULL AS INTEGER)                    AS store_sk,
+    CAST(NULL AS INTEGER)                    AS call_center_sk,
+    CAST(NULL AS INTEGER)                    AS catalog_page_sk,
+    CAST(NULL AS INTEGER)                    AS warehouse_sk,
+    wr_web_page_sk                           AS web_page_sk,
+    CAST(NULL AS INTEGER)                    AS ship_mode_sk,
+    wr_reason_sk                             AS reason_sk,
+    wr_returned_date_sk                      AS returned_date_sk,
+    wr_returned_time_sk                      AS returned_time_sk,
+    wr_return_quantity                       AS return_quantity,
+    wr_return_amt                            AS return_amt,
+    wr_return_tax                            AS return_tax,
+    wr_return_amt_inc_tax                    AS return_amt_inc_tax,
+    wr_fee                                   AS fee,
+    wr_return_ship_cost                      AS return_ship_cost,
+    wr_refunded_cash                         AS refunded_cash,
+    wr_reversed_charge                       AS reversed_charge,
+    wr_account_credit                        AS credit,
+    wr_net_loss                              AS net_loss,
+    _batch_id,
+    _ingested_at,
+    _source_file
+FROM {{ source('bronze', 'web_returns') }}

@@ -1,0 +1,136 @@
+version: 2
+
+models:
+  # ----- dims -----
+  - name: dim_customer
+    description: "SCD1 customer with current address, demographics, and household income band."
+    columns:
+      - name: customer_key
+        tests: [not_null, unique]
+      - name: customer_id
+        tests: [not_null]
+      - name: is_preferred_customer
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+  - name: dim_item
+    description: "SCD2: all versions retained, unique on item_key; is_current flags the active row per item_id."
+    columns:
+      - name: item_key
+        tests: [not_null, unique]
+      - name: item_id
+        tests: [not_null]
+      - name: is_current
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+  - name: dim_date
+    columns:
+      - name: date_key
+        tests: [not_null, unique]
+      - name: calendar_year
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1900
+              max_value: 2100
+
+  - name: dim_store
+    columns:
+      - name: store_key
+        tests: [not_null, unique]
+
+  - name: dim_promotion
+    columns:
+      - name: promo_key
+        tests: [not_null, unique]
+
+  # ----- facts -----
+  - name: fact_sales
+    description: "Unified sales across store/catalog/web. Rows that violate business rules are in fact_sales__anomalies."
+    columns:
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['store', 'catalog', 'web']
+      - name: item_sk
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_item')
+              field: item_key
+      - name: sold_date_sk
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: quantity
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+  - name: fact_returns
+    columns:
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['store', 'catalog', 'web']
+      - name: item_sk
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_item')
+              field: item_key
+
+  - name: fact_inventory
+    columns:
+      - name: item_sk
+        tests: [not_null]
+      - name: warehouse_sk
+        tests: [not_null]
+      - name: date_sk
+        tests: [not_null]
+
+  # ----- anomaly sidecars -----
+  - name: fact_sales__anomalies
+    description: "Sales rows failing a business rule. One row per anomaly; _anomaly_reason names the rule."
+    columns:
+      - name: _anomaly_reason
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - missing_item_sk
+                - missing_order_id
+                - missing_sold_date
+                - non_positive_quantity
+                - negative_sales_price
+                - negative_net_paid
+
+  - name: fact_returns__anomalies
+    columns:
+      - name: _anomaly_reason
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - missing_item_sk
+                - missing_order_id
+                - missing_returned_date
+                - non_positive_quantity
+                - negative_return_amt
+
+seeds:
+  - name: dim_channel
+    columns:
+      - name: channel_key
+        tests: [not_null, unique]
+      - name: channel_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['store', 'catalog', 'web']

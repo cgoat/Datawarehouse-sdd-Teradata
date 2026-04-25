@@ -1,0 +1,67 @@
+# Minimal Airflow for Windows dev. Runs the pipeline against Teradata on 192.168.47.128.
+# Start:  docker compose -f airflow/docker-compose.yml up -d
+# UI:     http://localhost:8080   (admin / admin)
+
+x-airflow-common: &airflow-common
+  build: .
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__WEBSERVER__SECRET_KEY: "dev-change-me"
+    # Teradata creds forwarded from host .env
+    TD_HOST: ${TD_HOST}
+    TD_USER: ${TD_USER}
+    TD_PASSWORD: ${TD_PASSWORD}
+    TD_PORT: ${TD_PORT:-1025}
+    TD_DB_BRONZE: ${TD_DB_BRONZE:-DW_BRONZE}
+    TD_DB_SILVER: ${TD_DB_SILVER:-DW_SILVER}
+    TD_DB_GOLD: ${TD_DB_GOLD:-DW_GOLD}
+    TD_DB_DQ: ${TD_DB_DQ:-DW_DQ}
+    DATA_DIR: /opt/project/data
+    PYTHONPATH: /opt/project
+  volumes:
+    - ../:/opt/project
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - "airflow db migrate && airflow users create --username admin --password admin
+         --firstname a --lastname a --role Admin --email admin@example.com || true"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports: ["8080:8080"]
+    depends_on:
+      - airflow-init
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      - airflow-init
+
+volumes:
+  airflow-db:

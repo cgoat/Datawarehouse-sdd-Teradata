@@ -1,0 +1,35 @@
+-- store_returns: refunded == returning customer (one person, for store channel).
+-- Column order must match stg_catalog_returns / stg_web_returns.
+
+SELECT
+    CAST('store' AS VARCHAR(10))             AS channel,
+    CAST(sr_ticket_number AS BIGINT)         AS return_order_id,
+    sr_item_sk                               AS item_sk,
+    sr_customer_sk                           AS refunded_customer_sk,
+    sr_customer_sk                           AS returning_customer_sk,
+    sr_cdemo_sk                              AS refunded_cdemo_sk,
+    sr_hdemo_sk                              AS refunded_hdemo_sk,
+    sr_addr_sk                               AS refunded_addr_sk,
+    sr_store_sk                              AS store_sk,
+    CAST(NULL AS INTEGER)                    AS call_center_sk,
+    CAST(NULL AS INTEGER)                    AS catalog_page_sk,
+    CAST(NULL AS INTEGER)                    AS warehouse_sk,
+    CAST(NULL AS INTEGER)                    AS web_page_sk,
+    CAST(NULL AS INTEGER)                    AS ship_mode_sk,
+    sr_reason_sk                             AS reason_sk,
+    sr_returned_date_sk                      AS returned_date_sk,
+    sr_return_time_sk                        AS returned_time_sk,
+    sr_return_quantity                       AS return_quantity,
+    sr_return_amt                            AS return_amt,
+    sr_return_tax                            AS return_tax,
+    sr_return_amt_inc_tax                    AS return_amt_inc_tax,
+    sr_fee                                   AS fee,
+    CAST(NULL AS DECIMAL(7,2))               AS return_ship_cost,
+    sr_refunded_cash                         AS refunded_cash,
+    sr_reversed_charge                       AS reversed_charge,
+    sr_store_credit                          AS credit,
+    sr_net_loss                              AS net_loss,
+    _batch_id,
+    _ingested_at,
+    _source_file
+FROM {{ source('bronze', 'store_returns') }}

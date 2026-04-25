@@ -1,0 +1,65 @@
+version: 2
+
+models:
+  - name: mart_sales_performance
+    description: "Daily sales rollup by channel; gross, net, profit, returns, AOV, returns rate."
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['store', 'catalog', 'web']
+      - name: units_sold
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+  - name: mart_customer_360
+    description: "Per-customer LTV + RFM + segment + preferred channel."
+    columns:
+      - name: customer_key
+        tests: [not_null, unique]
+      - name: segment
+        tests:
+          - accepted_values:
+              values: ['Champion', 'Loyal', 'New', 'At Risk', 'Lost', 'Inactive', 'Potential']
+      - name: r_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 5
+              where: "r_score is not null"
+
+  - name: mart_product_analytics
+    description: "Per-item lifetime sales, returns rate, revenue ranks. One row per current item."
+    columns:
+      - name: item_key
+        tests: [not_null, unique]
+      - name: rank_by_revenue
+        tests:
+          - not_null
+      - name: returns_rate
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+
+  - name: mart_channel_comparison
+    description: "Monthly channel-vs-channel metrics; share_of_total per period."
+    columns:
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['store', 'catalog', 'web']
+      - name: share_of_total
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
