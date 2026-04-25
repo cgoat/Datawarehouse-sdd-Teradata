@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Building a TPC-DS Data Warehouse on Teradata — Bronze, Silver, Gold, and the Honest Lessons of Performance Tuning</title>
+<title>Building a Data Warehouse on Teradata using Spec Driven Development</title>
 <style>
   :root {
     --fg: #292929; --muted: #6b6b6b; --bg: #fff; --rule: #eee;
@@ -101,16 +101,50 @@
 </head>
 <body>
 
-<h1>Building a TPC-DS Data Warehouse on Teradata</h1>
-<p class="deck">From Bronze to Gold in five sessions — including the parts that didn't work the first time.</p>
-<p class="meta">A walkthrough of layered ingestion, dbt on Teradata, Great Expectations, dynamic FastLoad selection, and what happens when you apply a "performance tuning" that makes things slower.</p>
+<h1>Building a Data Warehouse on Teradata using Spec Driven Development</h1>
+<p class="deck">Four short markdown files told the build what to do. The interesting story is how strictly that worked — and where the specs paid for themselves.</p>
+<p class="meta">A walkthrough of layered ingestion, dbt on Teradata, Great Expectations, dynamic FastLoad selection, and what happens when you apply a "performance tuning" that makes things slower — with each decision traced back to the spec that demanded it.</p>
 
-<h2>The job</h2>
+<h2>Spec Driven Development, briefly</h2>
 <p>
-  Stand up a Teradata data warehouse for a fictitious retailer. CSV files in, BI-ready marts out, a daily SLA of 7 a.m., a Reliability Engineer who wants to see the pipeline status, and a Business Analyst who wants four marts: <em>sales performance</em>, <em>customer 360</em>, <em>product analytics</em>, and <em>channel comparison</em>.
+  <strong>Spec Driven Development (SDD)</strong> is an unfussy idea: before you write code, write down — in plain English, in small files — what you're building and why. Not requirements documents, not Confluence pages, not Jira epics. Four short markdown files in the repo root, each answering one question:
+</p>
+<ul>
+  <li><code>mission.md</code> — <em>why does this exist?</em> One-line pitch, target audience, goals, non-goals, personas.</li>
+  <li><code>roadmap.md</code> — <em>what ships, in what order?</em> Vertical phases, each demoable on its own.</li>
+  <li><code>tech-stack.md</code> — <em>what tools, on purpose?</em> Runtime, framework, data layer, deployment.</li>
+  <li><code>README.md</code> — <em>what's already built?</em> The current state, never the future.</li>
+</ul>
+<p>
+  These aren't decoration. Every phase below started by re-reading the relevant spec line, and every contentious choice (do we drop bad rows or tag them? do we skip <code>inventory</code> for the demo? do we change a primary index?) was settled by checking what the specs said. The specs are short on purpose — under 200 lines combined — so they get read.
 </p>
 <p>
-  Source data: TPC-DS scale factor 1, the canonical retail benchmark — 25 pipe-delimited files, ~1.2&nbsp;GB, three sales channels (store, catalog, web), three corresponding returns tables, and a fistful of dimensions. Target: a real Teradata 20 instance.
+  The whole repo lives at <a href="https://github.com/cgoat/Datawarehouse-sdd-Teradata">github.com/cgoat/Datawarehouse-sdd-Teradata</a>, with the four spec files at the top of the tree. The rest of this article walks through the build with each section anchored to the spec line that drove it.
+</p>
+
+<h2>The specs, abbreviated</h2>
+<p>
+  From <code>mission.md</code>:
+</p>
+<blockquote>
+  Goals: <em>Timely</em> — provide data for timely decision making. <em>Quality</em> — data that adheres to the business rules.<br>
+  Personas: <em>Business Analyst</em> (analyses and reports), <em>CEO</em> (reviews), <em>Reliability Engineer</em> (monitors pipelines for failures).<br>
+  Non-goals: SaaS infrastructure; Reporting tool.
+</blockquote>
+<p>
+  From <code>roadmap.md</code>:
+</p>
+<blockquote>
+  Small, vertical slices. Each phase is shippable and demo-able on its own. Phase 0 — Bronze. Phase 1 — Silver (with anomaly tables). Phase 2 — Gold (integrated marts). Phase 3 — Performance tuning (review long-running queries, EXPLAIN, apply changes, show improvement).
+</blockquote>
+<p>
+  From <code>tech-stack.md</code>:
+</p>
+<blockquote>
+  DBT for transformations. Python for ingestion and API. PHP for dashboards. Open source for orchestration and DQ. Teradata as the warehouse. Bronze/Silver/Gold layers.
+</blockquote>
+<p>
+  Three roles, two goals, four phases, six tools. That's the whole brief. Source data: TPC-DS scale factor 1 — 25 pipe-delimited files, ~1.2&nbsp;GB, three sales channels (store, catalog, web), three corresponding returns tables, a fistful of dimensions. Target: a real Teradata 20 instance.
 </p>
 
 <h2>Architecture in one screen</h2>
@@ -138,7 +172,8 @@ Cross-cutting:
   PHP dashboard     ← Reliability · Silver · Gold · Performance tabs
 </div>
 
-<h2>Phase 0 — the loader story</h2>
+<h2>Phase 0 — Bronze, the loader story</h2>
+<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> roadmap.md Phase 0 — "ingest using dbt framework into a raw zone (Bronze); schedule the ingestion as a batch job; perform data quality checks and generate a dashboard."</p>
 <p>
   The first instinct on any Python-to-Teradata pipeline is the same: <code>cursor.executemany("INSERT ... VALUES (?, ?, ?)", chunk)</code> in a loop over <code>pandas.read_csv(chunksize=10_000)</code>. It works. It's also genuinely slow.
 </p>
@@ -205,9 +240,10 @@ def pick_tool(path: Path) -> str:
 
 <p>Total Bronze load went from ~17 min to ~6 min, all driven by a 5-line picker.</p>
 
-<h2>Phase 1 — anomaly sidecars beat data loss</h2>
+<h2>Phase 1 — Silver, anomaly sidecars beat data loss</h2>
+<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> roadmap.md Phase 1 — "while moving the data clean the data per the business rules. Move any anomaly data to the anomaly tables." This is where the <em>Quality</em> goal in mission.md gets its teeth.</p>
 <p>
-  Silver is where business rules show up. Quantities should be positive, FKs should resolve, dates shouldn't be null. The wrong move is to filter the bad rows out and forget. The right move is to <em>tag them and route them</em>.
+  Silver is where business rules show up. Quantities should be positive, FKs should resolve, dates shouldn't be null. The spec is explicit: move anomaly rows to anomaly tables. That single line rules out the easy cheat — <code>WHERE quantity &gt; 0</code> filters and a shrug — and forces a deliberate sidecar pattern. The right move is to <em>tag and route</em>.
 </p>
 <p>
   Every union of channel facts goes through one intermediate model that adds an <code>_anomaly_reason</code> column:
@@ -335,9 +371,19 @@ silver:
   <strong>The CHAR(1) padding trap.</strong> The <code>teradatasql</code> driver returns <code>CHAR(1)</code> values padded to display width, so <code>customer.c_preferred_cust_flag</code> comes back as <code>'Y '</code> (length 2). Any <code>value_set: ['Y', 'N']</code> expectation fails on every row. The clean form lives in <code>dim_customer.is_preferred_customer</code> as <code>0/1</code>. Test the cleaned column; let the raw one alone.
 </div>
 
-<h2>Phase 3 — performance tuning, with a humbling result</h2>
+<h2>Phase 2 — Gold, four marts the personas asked for</h2>
+<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> README.md stakeholder section — "Mrs. Business Analyst wants data in the consumption layer to do analysis." Specifically: <code>mart_sales_performance</code>, <code>mart_customer_360</code>, <code>mart_product_analytics</code>, <code>mart_channel_comparison</code>.</p>
 <p>
-  Phase 3 is where most "we tuned and got 5× faster!" articles end. This one isn't going to. Let me show you what actually happened.
+  This is the SDD payoff in its purest form: the BA persona named four marts, the roadmap reserved Phase 2 for them, and the implementation is four <code>.sql</code> files. <code>mart_customer_360</code> bundles RFM segmentation (Champion / Loyal / At Risk / Lost / New / Inactive / Potential) with lifetime value and preferred channel — one row per customer. <code>mart_sales_performance</code> is daily by channel; <code>mart_channel_comparison</code> is monthly with share-of-total. <code>mart_product_analytics</code> ranks 9,000 current items by revenue with returns rate and top channel.
+</p>
+<p>
+  No marts beyond what the spec named. Non-goal discipline is the same lever as goal discipline.
+</p>
+
+<h2>Phase 3 — performance tuning, with a humbling result</h2>
+<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> roadmap.md Phase 3 — "review the long running queries; review the explain plan; make necessary changes (including the database settings) to improve based on the plan; <em>show the improvement on the dashboard</em>."</p>
+<p>
+  That last clause — <em>show the improvement on the dashboard</em> — is the SDD discipline that makes this section honest. The spec doesn't say "show improvement if it works." It says show it. So when the tuning made three of five queries slower, the dashboard had to render that result, in red, where the Reliability Engineer would see it. Phase 3 is where most "we tuned and got 5× faster!" articles end. This one isn't going to.
 </p>
 
 <h3>The harness</h3>
@@ -411,8 +457,27 @@ QUERIES = {
   <li><strong>Track perf history, not just current numbers.</strong> The <code>DW_DQ.perf_log</code> table makes "did this regress?" a one-line query.</li>
 </ul>
 
+<h2>What SDD actually bought us</h2>
+<p>
+  The temptation with a methodology post is to over-claim. SDD didn't make the build faster than ad-hoc would have. What it did was:
+</p>
+<ul>
+  <li><strong>Settled arguments before they happened.</strong> "Should anomaly rows be dropped or tagged?" — roadmap.md Phase 1 said tag. Done. No meeting.</li>
+  <li><strong>Kept scope honest.</strong> mission.md said non-goals: SaaS infrastructure, reporting tool. The dashboard is a thin PHP page reading from a FastAPI helper — not a BI product. The pipeline is local + Docker — not a managed service.</li>
+  <li><strong>Made personas the unit of design review.</strong> Three personas → three dashboard tabs (Reliability, Silver/Gold for the BA, Performance for whoever owns the tuning). When I added a fourth tab, I had to justify it against an existing persona.</li>
+  <li><strong>Forced demoable phases.</strong> roadmap.md said "each phase is shippable and demo-able on its own." That's why Bronze got its own dashboard tab before Silver was a single SQL line. Each phase landed with a thing to show.</li>
+  <li><strong>Made the negative result publishable.</strong> The Phase 3 spec required showing improvement on the dashboard. It didn't say "if there is improvement." Without that line, the regressions would have quietly disappeared. With it, they're the most useful artifact in the repo.</li>
+</ul>
+<p>
+  The four spec files added up to fewer lines than this article. They didn't decide everything — they couldn't have predicted the FastLoad-per-call session bug or the CHAR(1) padding trap. But they decided the things that matter most: <em>what is being built, why, for whom, with what tools, in what order, and how do we know it works</em>. With those settled, the rest is just engineering.
+</p>
+
 <h2>What's in the repo</h2>
 <pre><code>dw-teradata/
+├── mission.md         WHY — pitch, audience, goals, non-goals, personas
+├── roadmap.md         WHAT ships, in WHAT order — phases 0..3
+├── tech-stack.md      TOOLS — Teradata, dbt, Python, PHP, open source
+├── README.md          CURRENT state — phases done, quickstart
 ├── ingestion/         Loader (FastLoad picker), DDL runner, run-log writer
 ├── transform/         dbt project: stg/int (ephemeral) + dim/fact/anomaly + 4 marts
 ├── dq/                Great Expectations suites (bronze/silver/gold)
@@ -423,13 +488,16 @@ QUERIES = {
 ├── teradata/ddl/      One-time DBs + Bronze tables + run_log/dq_result/perf_log
 ├── scripts/           Windows .bat wrappers for every step
 └── tests/             pytest — schema contract checks against .dat files</code></pre>
+<p style="margin-top:8px;color:var(--muted);font-size:15px">
+  The four spec files at the top are the ones that matter. Read them first, in that order. The rest of the tree is the implementation that those four files demanded.
+</p>
 
 <p>
   The full source is at <a href="https://github.com/cgoat/Datawarehouse-sdd-Teradata">github.com/cgoat/Datawarehouse-sdd-Teradata</a>. It runs end-to-end against a Teradata instance with TPC-DS SF1 data in <code>./data/</code>; bring your own warehouse.
 </p>
 
 <hr>
-<p class="meta">If you take one thing away: track <em>what tool ran each step</em> in your run log, not just whether it succeeded. The day you wonder why last Tuesday's load took twice as long is the day a <code>tool</code> column saves you an hour.</p>
+<p class="meta">If you take one thing away from the SDD framing: write the four spec files <em>before</em> you open your IDE. Keep them under 200 lines combined. Reference them at every contentious decision. They won't write your code — but they'll tell you when you're about to write the wrong code.</p>
 
 </body>
 </html>
