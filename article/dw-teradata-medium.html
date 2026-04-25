@@ -97,6 +97,9 @@
     text-align: center;
     font-style: italic;
   }
+  .spec-line { margin-top: -8px; }
+  .note      { color: var(--muted); font-size: 14px; }
+  .tree-note { color: var(--muted); font-size: 15px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -173,7 +176,7 @@ Cross-cutting:
 </div>
 
 <h2>Phase 0 — Bronze, the loader story</h2>
-<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> roadmap.md Phase 0 — "ingest using dbt framework into a raw zone (Bronze); schedule the ingestion as a batch job; perform data quality checks and generate a dashboard."</p>
+<p class="meta spec-line"><strong>Spec line:</strong> roadmap.md Phase 0 — "ingest using dbt framework into a raw zone (Bronze); schedule the ingestion as a batch job; perform data quality checks and generate a dashboard."</p>
 <p>
   The first instinct on any Python-to-Teradata pipeline is the same: <code>cursor.executemany("INSERT ... VALUES (?, ?, ?)", chunk)</code> in a loop over <code>pandas.read_csv(chunksize=10_000)</code>. It works. It's also genuinely slow.
 </p>
@@ -229,7 +232,7 @@ def pick_tool(path: Path) -> str:
   <tr><td><code>executemany</code></td><td class="num">11</td><td class="num">7,689</td><td class="num">38 s</td><td class="num">201 rows/sec*</td></tr>
 </table>
 
-<p style="font-size:14px;color:var(--muted)">*executemany throughput is dominated by per-table session setup (~3.5 s each) — the rows themselves take milliseconds.</p>
+<p class="note">*executemany throughput is dominated by per-table session setup (~3.5 s each) — the rows themselves take milliseconds.</p>
 
 <p>Per-table speedups vs the <code>executemany</code>-only baseline:</p>
 <ul>
@@ -241,7 +244,7 @@ def pick_tool(path: Path) -> str:
 <p>Total Bronze load went from ~17 min to ~6 min, all driven by a 5-line picker.</p>
 
 <h2>Phase 1 — Silver, anomaly sidecars beat data loss</h2>
-<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> roadmap.md Phase 1 — "while moving the data clean the data per the business rules. Move any anomaly data to the anomaly tables." This is where the <em>Quality</em> goal in mission.md gets its teeth.</p>
+<p class="meta spec-line"><strong>Spec line:</strong> roadmap.md Phase 1 — "while moving the data clean the data per the business rules. Move any anomaly data to the anomaly tables." This is where the <em>Quality</em> goal in mission.md gets its teeth.</p>
 <p>
   Silver is where business rules show up. Quantities should be positive, FKs should resolve, dates shouldn't be null. The spec is explicit: move anomaly rows to anomaly tables. That single line rules out the easy cheat — <code>WHERE quantity &gt; 0</code> filters and a shrug — and forces a deliberate sidecar pattern. The right move is to <em>tag and route</em>.
 </p>
@@ -372,7 +375,7 @@ silver:
 </div>
 
 <h2>Phase 2 — Gold, four marts the personas asked for</h2>
-<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> README.md stakeholder section — "Mrs. Business Analyst wants data in the consumption layer to do analysis." Specifically: <code>mart_sales_performance</code>, <code>mart_customer_360</code>, <code>mart_product_analytics</code>, <code>mart_channel_comparison</code>.</p>
+<p class="meta spec-line"><strong>Spec line:</strong> README.md stakeholder section — "Mrs. Business Analyst wants data in the consumption layer to do analysis." Specifically: <code>mart_sales_performance</code>, <code>mart_customer_360</code>, <code>mart_product_analytics</code>, <code>mart_channel_comparison</code>.</p>
 <p>
   This is the SDD payoff in its purest form: the BA persona named four marts, the roadmap reserved Phase 2 for them, and the implementation is four <code>.sql</code> files. <code>mart_customer_360</code> bundles RFM segmentation (Champion / Loyal / At Risk / Lost / New / Inactive / Potential) with lifetime value and preferred channel — one row per customer. <code>mart_sales_performance</code> is daily by channel; <code>mart_channel_comparison</code> is monthly with share-of-total. <code>mart_product_analytics</code> ranks 9,000 current items by revenue with returns rate and top channel.
 </p>
@@ -381,7 +384,7 @@ silver:
 </p>
 
 <h2>Phase 3 — performance tuning, with a humbling result</h2>
-<p class="meta" style="margin-top:-8px"><strong>Spec line:</strong> roadmap.md Phase 3 — "review the long running queries; review the explain plan; make necessary changes (including the database settings) to improve based on the plan; <em>show the improvement on the dashboard</em>."</p>
+<p class="meta spec-line"><strong>Spec line:</strong> roadmap.md Phase 3 — "review the long running queries; review the explain plan; make necessary changes (including the database settings) to improve based on the plan; <em>show the improvement on the dashboard</em>."</p>
 <p>
   That last clause — <em>show the improvement on the dashboard</em> — is the SDD discipline that makes this section honest. The spec doesn't say "show improvement if it works." It says show it. So when the tuning made three of five queries slower, the dashboard had to render that result, in red, where the Reliability Engineer would see it. Phase 3 is where most "we tuned and got 5× faster!" articles end. This one isn't going to.
 </p>
@@ -488,7 +491,7 @@ QUERIES = {
 ├── teradata/ddl/      One-time DBs + Bronze tables + run_log/dq_result/perf_log
 ├── scripts/           Windows .bat wrappers for every step
 └── tests/             pytest — schema contract checks against .dat files</code></pre>
-<p style="margin-top:8px;color:var(--muted);font-size:15px">
+<p class="tree-note">
   The four spec files at the top are the ones that matter. Read them first, in that order. The rest of the tree is the implementation that those four files demanded.
 </p>
 
